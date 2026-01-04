@@ -19,6 +19,12 @@ def _get_float(name: str, default: str) -> float:
 DISCORD_TOKEN = _get("DISCORD_TOKEN")
 CHANNEL_ID    = _get("CHANNEL_ID")
 
+# Telegram (for signal reading with Telethon)
+TELEGRAM_API_ID         = _get_int("TELEGRAM_API_ID", "0") if _get("TELEGRAM_API_ID") else 0
+TELEGRAM_API_HASH       = _get("TELEGRAM_API_HASH")
+TELEGRAM_CHANNEL        = _get("TELEGRAM_CHANNEL")  # Comma-separated channel usernames or IDs (e.g., "@ravenpro" or "1234567890")
+TELEGRAM_SESSION_STRING = _get("TELEGRAM_SESSION_STRING", "")  # Persistent session (will be auto-generated on first run)
+
 # Bybit
 BYBIT_API_KEY    = _get("BYBIT_API_KEY")
 BYBIT_API_SECRET = _get("BYBIT_API_SECRET")
