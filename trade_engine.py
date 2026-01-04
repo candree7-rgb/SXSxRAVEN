@@ -13,7 +13,8 @@ from config import (
     ENTRY_EXPIRATION_PRICE_PCT,
     TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT, FALLBACK_TP_PCT,
     MOVE_SL_TO_BE_ON_TP1, BE_BUFFER_PCT,
-    FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, FOLLOW_TP_MIN_FILL_PCT, FOLLOW_TP_CUMULATIVE_MIN,
+    FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, FOLLOW_TP_MODE, FOLLOW_TP_MIN_FILL_PCT, FOLLOW_TP_CUMULATIVE_MIN,
+    FOLLOW_TP_MOVE_INTERVAL, FOLLOW_TP_MOVE_ON_TPS,
     MAX_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
     QUANTUM_ENTRY_PHASE1_TIMEOUT, QUANTUM_ENTRY_PHASE2_TIMEOUT, QUANTUM_ENTRY_TOTAL_TIMEOUT,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
@@ -872,31 +873,50 @@ class TradeEngine:
                 tp_count = len(tr.get("tp_prices") or FALLBACK_TP_PCT)
                 self.log.info(f"🎯 TP{tp_num} HIT {tr['symbol']} ({tr['tp_fills']}/{tp_count})")
 
-            # Follow-TP: Move SL to previous TP level after each TP hit (SMART LOGIC)
+            # Follow-TP: Move SL to previous TP level after each TP hit (FLEXIBLE MODES)
             # OR just move to BE on TP1 (legacy behavior)
             if FOLLOW_TP_ENABLED:
-                # Follow-TP mode: move SL progressively (with smart thresholds)
+                # Follow-TP mode: move SL progressively
                 tp_prices = tr.get("tp_prices") or []
                 tp_splits = tr.get("tp_splits") or self._calc_tp_splits(len(tp_prices))
                 side = tr.get("order_side")  # "Buy" or "Sell"
                 entry = float(tr.get("avg_entry") or tr.get("entry_price") or tr.get("trigger"))
 
-                # Calculate cumulative % filled (sum of all TP fills)
-                cumulative_pct = sum(tp_splits[:tp_num])  # TPs are 1-indexed
+                # Determine if this TP should move SL based on FOLLOW_TP_MODE
+                should_move_sl = False
 
-                # Get this TP's fill percentage
-                this_tp_pct = tp_splits[tp_num - 1] if len(tp_splits) >= tp_num else 0
+                if FOLLOW_TP_MODE == "threshold":
+                    # THRESHOLD MODE: Only move SL if significant position closed
+                    cumulative_pct = sum(tp_splits[:tp_num])  # TPs are 1-indexed
+                    this_tp_pct = tp_splits[tp_num - 1] if len(tp_splits) >= tp_num else 0
+                    should_move_sl = (
+                        cumulative_pct >= FOLLOW_TP_CUMULATIVE_MIN or  # Cumulative threshold (e.g., 70%)
+                        this_tp_pct >= FOLLOW_TP_MIN_FILL_PCT          # Individual TP threshold (e.g., 15%)
+                    )
+                    self.log.debug(f"Follow-TP (threshold): TP{tp_num} fill={this_tp_pct:.1f}%, cumulative={cumulative_pct:.1f}%, move={should_move_sl}")
 
-                self.log.debug(f"Follow-TP check: TP{tp_num} fill={this_tp_pct:.1f}%, cumulative={cumulative_pct:.1f}%")
+                elif FOLLOW_TP_MODE == "skip_one":
+                    # SKIP-ONE MODE: Move SL only on odd TPs (TP1, TP3, TP5, ...)
+                    should_move_sl = (tp_num % 2 == 1)  # Odd TP numbers
+                    self.log.debug(f"Follow-TP (skip_one): TP{tp_num} is {'odd' if should_move_sl else 'even'}, move={should_move_sl}")
 
-                # SMART LOGIC: Only move SL if significant position closed
-                should_move_sl = (
-                    cumulative_pct >= FOLLOW_TP_CUMULATIVE_MIN or  # Cumulative threshold (e.g., 70%)
-                    this_tp_pct >= FOLLOW_TP_MIN_FILL_PCT          # Individual TP threshold (e.g., 15%)
-                )
+                elif FOLLOW_TP_MODE == "every_n":
+                    # EVERY-N MODE: Move SL every N TPs (e.g., every 2nd TP)
+                    should_move_sl = (tp_num % FOLLOW_TP_MOVE_INTERVAL == 1)  # TP1, TP3, TP5 if interval=2
+                    self.log.debug(f"Follow-TP (every_n): TP{tp_num}, interval={FOLLOW_TP_MOVE_INTERVAL}, move={should_move_sl}")
 
-                if tp_num == 1:
-                    # TP1 hit -> SL to Entry (BE) - ALWAYS move on TP1 (first protection)
+                elif FOLLOW_TP_MODE == "custom":
+                    # CUSTOM MODE: Move SL only on specific TPs (e.g., [1, 3])
+                    should_move_sl = (tp_num in FOLLOW_TP_MOVE_ON_TPS)
+                    self.log.debug(f"Follow-TP (custom): TP{tp_num} in {FOLLOW_TP_MOVE_ON_TPS}, move={should_move_sl}")
+
+                else:
+                    # Default: move on every TP (backward compatibility)
+                    should_move_sl = True
+                    self.log.debug(f"Follow-TP (default): TP{tp_num}, move={should_move_sl}")
+
+                if tp_num == 1 and should_move_sl:
+                    # TP1 hit -> SL to Entry (BE)
                     new_sl = entry
                     # Add buffer so BE is slightly in profit
                     if BE_BUFFER_PCT > 0:
@@ -907,12 +927,12 @@ class TradeEngine:
                     self._move_sl(tr["symbol"], new_sl)
                     tr["sl_moved_to_be"] = True
                     tr["last_sl_level"] = 0  # 0 = Entry/BE
-                    self.log.info(f"✅ SL -> BE {tr['symbol']} @ {new_sl:.6f} (TP1 hit, {this_tp_pct:.0f}%)")
+                    self.log.info(f"✅ SL -> BE {tr['symbol']} @ {new_sl:.6f} (TP{tp_num} hit, mode={FOLLOW_TP_MODE})")
                     # Cancel DCA orders on TP1
                     self._cancel_dca_orders(tr)
 
                 elif tp_num > 1 and len(tp_prices) >= tp_num - 1 and should_move_sl:
-                    # TP2+ hit -> SL to previous TP level (ONLY IF SIGNIFICANT FILL)
+                    # TP2+ hit -> SL to previous TP level
                     prev_tp = float(tp_prices[tp_num - 2])  # TP2 -> TP1, TP3 -> TP2, etc.
 
                     # Add buffer to the TP level
@@ -926,11 +946,11 @@ class TradeEngine:
 
                     self._move_sl(tr["symbol"], new_sl)
                     tr["last_sl_level"] = tp_num - 1
-                    self.log.info(f"✅ SL -> TP{tp_num-1} {tr['symbol']} @ {new_sl:.6f} (TP{tp_num} hit, {this_tp_pct:.0f}%, cumulative {cumulative_pct:.0f}%)")
+                    self.log.info(f"✅ SL -> TP{tp_num-1} {tr['symbol']} @ {new_sl:.6f} (TP{tp_num} hit, mode={FOLLOW_TP_MODE})")
 
-                elif tp_num > 1 and not should_move_sl:
-                    # Small TP fill - don't move SL to protect runner
-                    self.log.info(f"⏭️  TP{tp_num} hit but SKIP SL move (fill {this_tp_pct:.0f}% < {FOLLOW_TP_MIN_FILL_PCT:.0f}%, cumulative {cumulative_pct:.0f}% < {FOLLOW_TP_CUMULATIVE_MIN:.0f}%)")
+                elif tp_num >= 1 and not should_move_sl:
+                    # TP hit but skip SL move based on mode
+                    self.log.info(f"⏭️  TP{tp_num} hit but SKIP SL move (mode={FOLLOW_TP_MODE})")
 
             elif MOVE_SL_TO_BE_ON_TP1 and tp_num == 1 and not tr.get("sl_moved_to_be"):
                 # Legacy behavior: only move to BE on TP1

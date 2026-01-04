@@ -67,10 +67,24 @@ INITIAL_SL_PCT = _get_float("INITIAL_SL_PCT","19.0")  # SL distance from entry i
 FOLLOW_TP_ENABLED = _get_bool("FOLLOW_TP_ENABLED", "false")
 FOLLOW_TP_BUFFER_PCT = _get_float("FOLLOW_TP_BUFFER_PCT", "0.1")  # Buffer above/below TP level
 
-# Smart Follow-TP: Only move SL if significant position closed
-# Prevents runner from being stopped out too early on small TP fills (e.g., 5% or 10% TPs)
-FOLLOW_TP_MIN_FILL_PCT = _get_float("FOLLOW_TP_MIN_FILL_PCT", "15.0")  # Min % fill to move SL (15% of position)
+# Follow-TP Mode: How to decide when to move SL
+# - "threshold": Move SL only if fill >X% OR cumulative >Y% (smart, prevents early runner stops)
+# - "skip_one": Move SL only on odd TPs (TP1, TP3, TP5) - simple and effective
+# - "every_n": Move SL every N TPs (e.g., every 2nd TP)
+# - "custom": Move SL only on specific TPs (e.g., 1,3,5)
+FOLLOW_TP_MODE = _get("FOLLOW_TP_MODE", "custom").lower()
+
+# Threshold mode settings (only used if FOLLOW_TP_MODE=threshold)
+FOLLOW_TP_MIN_FILL_PCT = _get_float("FOLLOW_TP_MIN_FILL_PCT", "15.0")  # Min % fill to move SL
 FOLLOW_TP_CUMULATIVE_MIN = _get_float("FOLLOW_TP_CUMULATIVE_MIN", "70.0")  # OR cumulative >X% closed
+
+# Every-N mode settings (only used if FOLLOW_TP_MODE=every_n)
+FOLLOW_TP_MOVE_INTERVAL = _get_int("FOLLOW_TP_MOVE_INTERVAL", "2")  # Move SL every N TPs
+
+# Custom mode settings (only used if FOLLOW_TP_MODE=custom)
+# Comma-separated list of TP numbers that should move SL
+# Example: "1,3" = only TP1 and TP3 move SL, TP2/4/5/6 skip
+FOLLOW_TP_MOVE_ON_TPS = [int(x) for x in _get("FOLLOW_TP_MOVE_ON_TPS", "1,3").split(",") if x.strip()]
 
 # Quantum Entry Timeouts (seconds)
 QUANTUM_ENTRY_PHASE1_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE1_TIMEOUT", "90")   # Patient phase
