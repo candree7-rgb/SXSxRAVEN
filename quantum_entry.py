@@ -25,10 +25,13 @@ class QuantumEntryEngine:
     3. Dynamically reposition orders if price moves away
     4. Progressively increase aggression over time
     5. Guarantee fill with market order after timeout
+    6. Cancel entry if price already reached TP1 (trade already missed)
     """
 
     def __init__(self, bybit, symbol: str, side: str, zone_low: float, zone_high: float,
-                 base_qty: float, logger, tick_size: float, qty_step: float, min_qty: float):
+                 base_qty: float, logger, tick_size: float, qty_step: float, min_qty: float,
+                 tp1_price: float = None, phase1_timeout: int = 90, phase2_timeout: int = 90,
+                 total_timeout: int = 180):
         self.bybit = bybit
         self.symbol = symbol
         self.side = side  # "Buy" or "Sell"
@@ -38,6 +41,7 @@ class QuantumEntryEngine:
         self.zone_range = zone_high - zone_low
         self.base_qty = base_qty
         self.log = logger
+        self.tp1_price = tp1_price  # For checking if trade already missed
 
         # Precision
         self.tick_size = tick_size
@@ -51,10 +55,10 @@ class QuantumEntryEngine:
         self.start_time = time.time()
         self.price_history = []
 
-        # Timeouts (seconds)
-        self.PHASE_1_TIMEOUT = 90   # Patient phase (best prices)
-        self.PHASE_2_TIMEOUT = 90   # Active phase (chase if needed)
-        self.TOTAL_TIMEOUT = 180    # Max 3 minutes total
+        # Timeouts (seconds) - now configurable
+        self.PHASE_1_TIMEOUT = phase1_timeout   # Patient phase (best prices)
+        self.PHASE_2_TIMEOUT = phase2_timeout   # Active phase (chase if needed)
+        self.TOTAL_TIMEOUT = total_timeout      # Max total time
 
     def execute(self) -> Optional[Dict[str, Any]]:
         """
@@ -77,6 +81,11 @@ class QuantumEntryEngine:
             # Check if price is already way outside zone → SKIP
             if self._price_too_far(initial_price):
                 self.log.info(f"⏭️  SKIP {self.symbol} - price too far from zone ({initial_price})")
+                return None
+
+            # Check if price already reached TP1 → SKIP (trade already missed)
+            if self._price_past_tp1(initial_price):
+                self.log.info(f"⏭️  SKIP {self.symbol} - price already past TP1 ({initial_price} vs TP1 {self.tp1_price})")
                 return None
 
             # Analyze orderbook for liquidity
@@ -130,6 +139,18 @@ class QuantumEntryEngine:
         else:
             # For SELL: price too low below zone = bad
             return price < self.zone_low * 0.97  # 3% below zone bottom
+
+    def _price_past_tp1(self, price: float) -> bool:
+        """Check if price already reached TP1 (trade already missed)."""
+        if not self.tp1_price:
+            return False
+
+        if self.side == "Buy":
+            # For BUY/LONG: TP1 is above entry, bad if price already >= TP1
+            return price >= self.tp1_price
+        else:
+            # For SELL/SHORT: TP1 is below entry, bad if price already <= TP1
+            return price <= self.tp1_price
 
     def _analyze_orderbook(self) -> Dict[float, float]:
         """
@@ -285,6 +306,12 @@ class QuantumEntryEngine:
 
         try:
             current_price = self.bybit.last_price(CATEGORY, self.symbol)
+
+            # CRITICAL: If price already past TP1 → Cancel all and exit
+            if self._price_past_tp1(current_price):
+                self.log.warning(f"⚠️  Price past TP1 for {self.symbol} - cancelling entry (missed trade)")
+                self._cancel_all_orders()
+                raise RuntimeError("Price past TP1 - trade missed")
 
             # Track price history for momentum calculation
             self.price_history.append((time.time(), current_price))

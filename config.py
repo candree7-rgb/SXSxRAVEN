@@ -67,6 +67,16 @@ INITIAL_SL_PCT = _get_float("INITIAL_SL_PCT","19.0")  # SL distance from entry i
 FOLLOW_TP_ENABLED = _get_bool("FOLLOW_TP_ENABLED", "false")
 FOLLOW_TP_BUFFER_PCT = _get_float("FOLLOW_TP_BUFFER_PCT", "0.1")  # Buffer above/below TP level
 
+# Smart Follow-TP: Only move SL if significant position closed
+# Prevents runner from being stopped out too early on small TP fills (e.g., 5% or 10% TPs)
+FOLLOW_TP_MIN_FILL_PCT = _get_float("FOLLOW_TP_MIN_FILL_PCT", "15.0")  # Min % fill to move SL (15% of position)
+FOLLOW_TP_CUMULATIVE_MIN = _get_float("FOLLOW_TP_CUMULATIVE_MIN", "70.0")  # OR cumulative >X% closed
+
+# Quantum Entry Timeouts (seconds)
+QUANTUM_ENTRY_PHASE1_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE1_TIMEOUT", "90")   # Patient phase
+QUANTUM_ENTRY_PHASE2_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE2_TIMEOUT", "90")   # Active phase
+QUANTUM_ENTRY_TOTAL_TIMEOUT = _get_int("QUANTUM_ENTRY_TOTAL_TIMEOUT", "180")    # Max total time
+
 # Max SL distance filter: Skip signals where SL is more than X% from entry
 # Set to 0 to disable this filter
 MAX_SL_DISTANCE_PCT = _get_float("MAX_SL_DISTANCE_PCT", "0")

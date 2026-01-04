@@ -13,7 +13,9 @@ from config import (
     ENTRY_EXPIRATION_PRICE_PCT,
     TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT, FALLBACK_TP_PCT,
     MOVE_SL_TO_BE_ON_TP1, BE_BUFFER_PCT,
-    FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, MAX_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
+    FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, FOLLOW_TP_MIN_FILL_PCT, FOLLOW_TP_CUMULATIVE_MIN,
+    MAX_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
+    QUANTUM_ENTRY_PHASE1_TIMEOUT, QUANTUM_ENTRY_PHASE2_TIMEOUT, QUANTUM_ENTRY_TOTAL_TIMEOUT,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID
 )
@@ -424,7 +426,11 @@ class TradeEngine:
         zone_mid = (zone_low + zone_high) / 2
         base_qty = self.calc_base_qty(symbol, zone_mid)
 
-        self.log.info(f"🎯 Executing Quantum Entry for {symbol} (zone: {zone_low} - {zone_high})")
+        # Get TP1 for "price past TP1" check
+        tp_prices = sig.get("tp_prices") or []
+        tp1_price = float(tp_prices[0]) if tp_prices else None
+
+        self.log.info(f"🎯 Executing Quantum Entry for {symbol} (zone: {zone_low} - {zone_high}, TP1: {tp1_price})")
 
         # Execute Quantum Entry
         quantum = QuantumEntryEngine(
@@ -437,7 +443,11 @@ class TradeEngine:
             logger=self.log,
             tick_size=rules["tick_size"],
             qty_step=rules["qty_step"],
-            min_qty=rules["min_qty"]
+            min_qty=rules["min_qty"],
+            tp1_price=tp1_price,
+            phase1_timeout=QUANTUM_ENTRY_PHASE1_TIMEOUT,
+            phase2_timeout=QUANTUM_ENTRY_PHASE2_TIMEOUT,
+            total_timeout=QUANTUM_ENTRY_TOTAL_TIMEOUT
         )
 
         result = quantum.execute()
@@ -862,16 +872,31 @@ class TradeEngine:
                 tp_count = len(tr.get("tp_prices") or FALLBACK_TP_PCT)
                 self.log.info(f"🎯 TP{tp_num} HIT {tr['symbol']} ({tr['tp_fills']}/{tp_count})")
 
-            # Follow-TP: Move SL to previous TP level after each TP hit
+            # Follow-TP: Move SL to previous TP level after each TP hit (SMART LOGIC)
             # OR just move to BE on TP1 (legacy behavior)
             if FOLLOW_TP_ENABLED:
-                # Follow-TP mode: move SL progressively
+                # Follow-TP mode: move SL progressively (with smart thresholds)
                 tp_prices = tr.get("tp_prices") or []
+                tp_splits = tr.get("tp_splits") or self._calc_tp_splits(len(tp_prices))
                 side = tr.get("order_side")  # "Buy" or "Sell"
                 entry = float(tr.get("avg_entry") or tr.get("entry_price") or tr.get("trigger"))
 
+                # Calculate cumulative % filled (sum of all TP fills)
+                cumulative_pct = sum(tp_splits[:tp_num])  # TPs are 1-indexed
+
+                # Get this TP's fill percentage
+                this_tp_pct = tp_splits[tp_num - 1] if len(tp_splits) >= tp_num else 0
+
+                self.log.debug(f"Follow-TP check: TP{tp_num} fill={this_tp_pct:.1f}%, cumulative={cumulative_pct:.1f}%")
+
+                # SMART LOGIC: Only move SL if significant position closed
+                should_move_sl = (
+                    cumulative_pct >= FOLLOW_TP_CUMULATIVE_MIN or  # Cumulative threshold (e.g., 70%)
+                    this_tp_pct >= FOLLOW_TP_MIN_FILL_PCT          # Individual TP threshold (e.g., 15%)
+                )
+
                 if tp_num == 1:
-                    # TP1 hit -> SL to Entry (BE)
+                    # TP1 hit -> SL to Entry (BE) - ALWAYS move on TP1 (first protection)
                     new_sl = entry
                     # Add buffer so BE is slightly in profit
                     if BE_BUFFER_PCT > 0:
@@ -882,12 +907,12 @@ class TradeEngine:
                     self._move_sl(tr["symbol"], new_sl)
                     tr["sl_moved_to_be"] = True
                     tr["last_sl_level"] = 0  # 0 = Entry/BE
-                    self.log.info(f"✅ SL -> BE {tr['symbol']} @ {new_sl:.6f} (TP1 hit)")
+                    self.log.info(f"✅ SL -> BE {tr['symbol']} @ {new_sl:.6f} (TP1 hit, {this_tp_pct:.0f}%)")
                     # Cancel DCA orders on TP1
                     self._cancel_dca_orders(tr)
 
-                elif tp_num > 1 and len(tp_prices) >= tp_num - 1:
-                    # TP2+ hit -> SL to previous TP level
+                elif tp_num > 1 and len(tp_prices) >= tp_num - 1 and should_move_sl:
+                    # TP2+ hit -> SL to previous TP level (ONLY IF SIGNIFICANT FILL)
                     prev_tp = float(tp_prices[tp_num - 2])  # TP2 -> TP1, TP3 -> TP2, etc.
 
                     # Add buffer to the TP level
@@ -901,7 +926,11 @@ class TradeEngine:
 
                     self._move_sl(tr["symbol"], new_sl)
                     tr["last_sl_level"] = tp_num - 1
-                    self.log.info(f"✅ SL -> TP{tp_num-1} {tr['symbol']} @ {new_sl:.6f} (TP{tp_num} hit)")
+                    self.log.info(f"✅ SL -> TP{tp_num-1} {tr['symbol']} @ {new_sl:.6f} (TP{tp_num} hit, {this_tp_pct:.0f}%, cumulative {cumulative_pct:.0f}%)")
+
+                elif tp_num > 1 and not should_move_sl:
+                    # Small TP fill - don't move SL to protect runner
+                    self.log.info(f"⏭️  TP{tp_num} hit but SKIP SL move (fill {this_tp_pct:.0f}% < {FOLLOW_TP_MIN_FILL_PCT:.0f}%, cumulative {cumulative_pct:.0f}% < {FOLLOW_TP_CUMULATIVE_MIN:.0f}%)")
 
             elif MOVE_SL_TO_BE_ON_TP1 and tp_num == 1 and not tr.get("sl_moved_to_be"):
                 # Legacy behavior: only move to BE on TP1
