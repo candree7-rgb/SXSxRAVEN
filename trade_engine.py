@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import db_export
 import telegram_alerts
+from quantum_entry import QuantumEntryEngine
 
 from config import (
     CATEGORY, ACCOUNT_TYPE, QUOTE, LEVERAGE, RISK_PCT,
@@ -360,6 +361,92 @@ class TradeEngine:
             return oid
         except Exception as e:
             self.log.error(f"❌ Bybit place_order FAILED for {symbol}: {e}")
+            return None
+
+    def place_zone_entry(self, sig: Dict[str, Any], trade_id: str) -> Optional[str]:
+        """
+        Place entry using Quantum Entry System for zone-based signals.
+
+        Returns "QUANTUM_ENTRY" marker if successful, None if failed.
+        """
+        symbol = sig["symbol"]
+        side = "Sell" if sig["side"] == "sell" else "Buy"
+        zone_low = float(sig["entry_zone_low"])
+        zone_high = float(sig["entry_zone_high"])
+
+        # Symbol Locking: Check if another bot is already trading this symbol
+        if db_export.is_enabled():
+            active_trade = db_export.get_active_trade_for_symbol(symbol)
+            if active_trade and active_trade.get("bot_id") != BOT_ID:
+                other_bot = active_trade.get("bot_id")
+                self.log.info(f"⏭️  SKIP {symbol} – already managed by bot '{other_bot}' (symbol locked)")
+                return None
+
+        # Min signal leverage filter
+        if MIN_SIGNAL_LEVERAGE > 0:
+            signal_leverage = sig.get("leverage")
+            if signal_leverage and signal_leverage < MIN_SIGNAL_LEVERAGE:
+                self.log.info(f"⏭️  SKIP {symbol} – signal leverage {signal_leverage}x < {MIN_SIGNAL_LEVERAGE}x minimum")
+                return None
+
+        # Set leverage
+        try:
+            if not DRY_RUN:
+                self.bybit.set_leverage(CATEGORY, symbol, LEVERAGE)
+        except Exception as e:
+            self.log.warning(f"set_leverage failed for {symbol}: {e}")
+
+        # Check if current price is within reasonable range of zone
+        current_price = self.bybit.last_price(CATEGORY, symbol)
+        if side == "Buy":
+            if current_price > zone_high * 1.05:  # 5% above zone
+                self.log.info(f"⏭️  SKIP {symbol} – price too high ({current_price} > {zone_high})")
+                return None
+        else:
+            if current_price < zone_low * 0.95:  # 5% below zone
+                self.log.info(f"⏭️  SKIP {symbol} – price too low ({current_price} < {zone_low})")
+                return None
+
+        # Check max SL distance filter
+        if MAX_SL_DISTANCE_PCT > 0:
+            sl_price = sig.get("sl_price")
+            if sl_price:
+                zone_mid = (zone_low + zone_high) / 2
+                sl_distance_pct = abs(float(sl_price) - zone_mid) / zone_mid * 100
+                if sl_distance_pct > MAX_SL_DISTANCE_PCT:
+                    self.log.info(f"⏭️  SKIP {symbol} – SL too far ({sl_distance_pct:.1f}% > {MAX_SL_DISTANCE_PCT}%)")
+                    return None
+
+        # Get instrument rules
+        rules = self._get_instrument_rules(symbol)
+
+        # Calculate base quantity
+        zone_mid = (zone_low + zone_high) / 2
+        base_qty = self.calc_base_qty(symbol, zone_mid)
+
+        self.log.info(f"🎯 Executing Quantum Entry for {symbol} (zone: {zone_low} - {zone_high})")
+
+        # Execute Quantum Entry
+        quantum = QuantumEntryEngine(
+            bybit=self.bybit,
+            symbol=symbol,
+            side=side,
+            zone_low=zone_low,
+            zone_high=zone_high,
+            base_qty=base_qty,
+            logger=self.log,
+            tick_size=rules["tick_size"],
+            qty_step=rules["qty_step"],
+            min_qty=rules["min_qty"]
+        )
+
+        result = quantum.execute()
+
+        if result and result.get("filled"):
+            self.log.info(f"✅ Quantum Entry SUCCESS: {symbol} @ {result['avg_entry']:.6f} ({result['elapsed']:.0f}s)")
+            return "QUANTUM_ENTRY"  # Special marker for zone entry
+        else:
+            self.log.warning(f"❌ Quantum Entry FAILED for {symbol}")
             return None
 
     def cancel_entry(self, symbol: str, order_id: str) -> None:

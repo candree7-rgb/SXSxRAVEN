@@ -60,6 +60,23 @@ class BybitV5:
             raise RuntimeError("No ticker data")
         return float(lst[0]["lastPrice"])
 
+    def orderbook(self, category: str, symbol: str, limit: int = 25) -> Dict[str, Any]:
+        """Get orderbook depth (bids/asks)."""
+        params = {"category": category, "symbol": symbol, "limit": limit}
+        r = requests.get(f"{self.base}/v5/market/orderbook", params=params, timeout=10)
+        r.raise_for_status()
+        data = self._check(r.json())
+        result = data.get("result") or {}
+
+        # Bybit returns: {"b": [[price, size], ...], "a": [[price, size], ...]}
+        bids = [[float(p), float(s)] for p, s in (result.get("b") or [])]
+        asks = [[float(p), float(s)] for p, s in (result.get("a") or [])]
+
+        return {
+            "bids": bids,  # [[price, size], ...] sorted high to low
+            "asks": asks,  # [[price, size], ...] sorted low to high
+        }
+
     def instruments_info(self, category: str, symbol: str) -> Dict[str, Any]:
         r = requests.get(f"{self.base}/v5/market/instruments-info", params={"category": category, "symbol": symbol}, timeout=10)
         r.raise_for_status()

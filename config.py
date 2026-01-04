@@ -29,8 +29,12 @@ ACCOUNT_TYPE     = _get("ACCOUNT_TYPE","UNIFIED")  # UNIFIED / CONTRACT etc (dep
 # Bot identification (for multi-bot dashboard support)
 BOT_ID = _get("BOT_ID", "ao")  # Unique identifier for this bot instance
 
-# Signal Parser Version: "v1" = original embed format, "v2" = plain text format
+# Signal Parser Version: "v1" = AO original embed, "v2" = AO plain text, "raven" = Raven Pro
 SIGNAL_PARSER_VERSION = _get("SIGNAL_PARSER_VERSION", "v1").lower()
+
+# Quantum Entry: Use adaptive multi-layer entry for zone-based signals (Raven Pro)
+# Only applies when SIGNAL_PARSER_VERSION = "raven"
+USE_QUANTUM_ENTRY = _get_bool("USE_QUANTUM_ENTRY", "true")
 
 RECV_WINDOW = _get("RECV_WINDOW","5000")
 
