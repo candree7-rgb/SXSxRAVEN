@@ -3,6 +3,7 @@ import time
 import random
 import threading
 import logging
+import asyncio
 from queue import Queue, Empty
 from typing import Dict, Any
 
@@ -115,6 +116,9 @@ def main():
     def telegram_loop():
         try:
             log.info("🚀 Starting Telegram listener thread...")
+            # Create new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             telegram.start()
         except Exception as e:
             log.error(f"❌ Telegram thread error: {e}")
