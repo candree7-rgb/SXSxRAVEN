@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import db_export
 import telegram_alerts
-from quantum_entry import QuantumEntryEngine
+from quantum_entry import QuantumEntryEngine, calculate_optimal_timeouts
 
 from config import (
     CATEGORY, ACCOUNT_TYPE, QUOTE, LEVERAGE, RISK_PCT,
@@ -16,7 +16,7 @@ from config import (
     FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, FOLLOW_TP_MODE, FOLLOW_TP_MIN_FILL_PCT, FOLLOW_TP_CUMULATIVE_MIN,
     FOLLOW_TP_MOVE_INTERVAL, FOLLOW_TP_MOVE_ON_TPS,
     MAX_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
-    QUANTUM_ENTRY_PHASE1_TIMEOUT, QUANTUM_ENTRY_PHASE2_TIMEOUT, QUANTUM_ENTRY_TOTAL_TIMEOUT,
+    QUANTUM_ENTRY_MODE, QUANTUM_ENTRY_PHASE1_TIMEOUT, QUANTUM_ENTRY_PHASE2_TIMEOUT, QUANTUM_ENTRY_TOTAL_TIMEOUT,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID
 )
@@ -431,7 +431,39 @@ class TradeEngine:
         tp_prices = sig.get("tp_prices") or []
         tp1_price = float(tp_prices[0]) if tp_prices else None
 
-        self.log.info(f"🎯 Executing Quantum Entry for {symbol} (zone: {zone_low} - {zone_high}, TP1: {tp1_price})")
+        # Calculate optimal timeouts based on zone position and TP1 distance
+        timeouts = calculate_optimal_timeouts(
+            current_price=current_price,
+            zone_low=zone_low,
+            zone_high=zone_high,
+            tp1_price=tp1_price,
+            side=side,
+            mode=QUANTUM_ENTRY_MODE
+        )
+
+        # If calculate_optimal_timeouts returns None, signal should be skipped
+        if timeouts is None:
+            zone_range = zone_high - zone_low
+            position_pct = ((current_price - zone_low) / zone_range * 100) if side == "Buy" else ((zone_high - current_price) / zone_range * 100)
+            tp1_dist = abs(tp1_price - current_price) / current_price * 100 if tp1_price else 0
+            self.log.info(f"⏭️  SKIP {symbol} – price too close to TP1 (position: {position_pct:.1f}% in zone, TP1: {tp1_dist:.1f}% away)")
+            return None
+
+        phase1_timeout, phase2_timeout, total_timeout = timeouts
+
+        # Log selected strategy
+        zone_range = zone_high - zone_low
+        position_pct = ((current_price - zone_low) / zone_range * 100) if side == "Buy" else ((zone_high - current_price) / zone_range * 100)
+        if QUANTUM_ENTRY_MODE == "auto":
+            if total_timeout == 180:
+                strategy = "PATIENT"
+            elif total_timeout == 120:
+                strategy = "STANDARD"
+            else:
+                strategy = "AGGRESSIVE"
+            self.log.info(f"🎯 Quantum Entry {strategy} for {symbol} (zone: {zone_low}-{zone_high}, pos: {position_pct:.1f}%, TP1: {tp1_price}, timeouts: {phase1_timeout}/{phase2_timeout}/{total_timeout}s)")
+        else:
+            self.log.info(f"🎯 Quantum Entry for {symbol} (zone: {zone_low}-{zone_high}, TP1: {tp1_price}, mode: {QUANTUM_ENTRY_MODE}, timeouts: {phase1_timeout}/{phase2_timeout}/{total_timeout}s)")
 
         # Execute Quantum Entry
         quantum = QuantumEntryEngine(
@@ -446,9 +478,9 @@ class TradeEngine:
             qty_step=rules["qty_step"],
             min_qty=rules["min_qty"],
             tp1_price=tp1_price,
-            phase1_timeout=QUANTUM_ENTRY_PHASE1_TIMEOUT,
-            phase2_timeout=QUANTUM_ENTRY_PHASE2_TIMEOUT,
-            total_timeout=QUANTUM_ENTRY_TOTAL_TIMEOUT
+            phase1_timeout=phase1_timeout,
+            phase2_timeout=phase2_timeout,
+            total_timeout=total_timeout
         )
 
         result = quantum.execute()

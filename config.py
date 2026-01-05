@@ -92,7 +92,14 @@ FOLLOW_TP_MOVE_INTERVAL = _get_int("FOLLOW_TP_MOVE_INTERVAL", "2")  # Move SL ev
 # Example: "1,3" = only TP1 and TP3 move SL, TP2/4/5/6 skip
 FOLLOW_TP_MOVE_ON_TPS = [int(x) for x in _get("FOLLOW_TP_MOVE_ON_TPS", "1,3").split(",") if x.strip()]
 
-# Quantum Entry Timeouts (seconds)
+# Quantum Entry Mode: How aggressive to enter based on zone position
+# - "auto": Dynamic timeouts based on price position in zone + TP1 distance (RECOMMENDED for max profit!)
+# - "patient": Always use 90/90/180s timeouts (best entries, but may miss fast breakouts)
+# - "standard": Always use 60/60/120s timeouts (balanced)
+# - "aggressive": Always use 30/30/60s timeouts (catch all breakouts, but worse average entry)
+QUANTUM_ENTRY_MODE = _get("QUANTUM_ENTRY_MODE", "auto").lower()
+
+# Quantum Entry Timeouts (seconds) - only used if QUANTUM_ENTRY_MODE != "auto"
 QUANTUM_ENTRY_PHASE1_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE1_TIMEOUT", "90")   # Patient phase
 QUANTUM_ENTRY_PHASE2_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE2_TIMEOUT", "90")   # Active phase
 QUANTUM_ENTRY_TOTAL_TIMEOUT = _get_int("QUANTUM_ENTRY_TOTAL_TIMEOUT", "180")    # Max total time

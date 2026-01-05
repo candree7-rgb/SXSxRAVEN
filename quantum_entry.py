@@ -15,6 +15,93 @@ from typing import Any, Dict, List, Optional, Tuple
 from config import CATEGORY, DRY_RUN
 
 
+def calculate_optimal_timeouts(
+    current_price: float,
+    zone_low: float,
+    zone_high: float,
+    tp1_price: float,
+    side: str,
+    mode: str = "auto"
+) -> Optional[Tuple[int, int, int]]:
+    """
+    Calculate optimal entry timeouts based on zone position and TP1 distance.
+
+    Args:
+        current_price: Current market price
+        zone_low: Bottom of entry zone
+        zone_high: Top of entry zone
+        tp1_price: First take profit level
+        side: "Buy" or "Sell"
+        mode: "auto" (dynamic), "patient", "standard", "aggressive"
+
+    Returns:
+        Tuple of (phase1_timeout, phase2_timeout, total_timeout) in seconds
+        None if signal should be skipped (price too far, TP1 too close, etc.)
+
+    Strategy:
+    - Bottom 25% of zone → Patient (90/90/180) - best entries!
+    - Middle 50% of zone → Standard (60/60/120) - balance
+    - Top 25% of zone → Check TP1 distance:
+        - TP1 >10% away → Aggressive (30/30/60) - catch breakout!
+        - TP1 <5% away → Skip (trade already missed)
+        - Otherwise → Standard (60/60/120)
+    """
+    # Fixed modes
+    if mode == "patient":
+        return (90, 90, 180)
+    elif mode == "standard":
+        return (60, 60, 120)
+    elif mode == "aggressive":
+        return (30, 30, 60)
+
+    # Auto mode - zone position based
+    zone_range = zone_high - zone_low
+    if zone_range <= 0:
+        return (60, 60, 120)  # Fallback to standard
+
+    # Calculate position in zone (0.0 = bottom, 1.0 = top)
+    if side == "Buy":
+        position_in_zone = (current_price - zone_low) / zone_range
+    else:  # Sell
+        position_in_zone = (zone_high - current_price) / zone_range
+
+    position_in_zone = max(0.0, min(1.0, position_in_zone))  # Clamp to 0-1
+
+    # Calculate distance to TP1 (as percentage)
+    if tp1_price:
+        tp1_distance = abs(tp1_price - current_price) / current_price
+    else:
+        tp1_distance = 0.15  # Assume 15% if no TP1 given
+
+    # Decision logic
+    if position_in_zone < 0.25:
+        # Bottom 25% of zone - PATIENT MODE
+        # Price is at good entry level, wait for best fill
+        return (90, 90, 180)
+
+    elif position_in_zone < 0.75:
+        # Middle 50% of zone - STANDARD MODE
+        # Decent entry level, moderate urgency
+        return (60, 60, 120)
+
+    else:
+        # Top 25% of zone - CHECK TP1 DISTANCE
+        if tp1_distance < 0.05:
+            # TP1 less than 5% away - SKIP
+            # Trade already moved too far, not worth entering
+            return None
+
+        elif tp1_distance > 0.10:
+            # TP1 more than 10% away - AGGRESSIVE MODE
+            # Still enough room to TP1, catch the breakout!
+            return (30, 30, 60)
+
+        else:
+            # TP1 5-10% away - STANDARD MODE
+            # Moderate room, standard approach
+            return (60, 60, 120)
+
+
 class QuantumEntryEngine:
     """
     Adaptive Entry System for zone-based signals.
