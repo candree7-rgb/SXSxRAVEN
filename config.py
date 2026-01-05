@@ -19,6 +19,12 @@ def _get_float(name: str, default: str) -> float:
 DISCORD_TOKEN = _get("DISCORD_TOKEN")
 CHANNEL_ID    = _get("CHANNEL_ID")
 
+# Telegram (for signal reading with Telethon)
+TELEGRAM_API_ID         = _get_int("TELEGRAM_API_ID", "0") if _get("TELEGRAM_API_ID") else 0
+TELEGRAM_API_HASH       = _get("TELEGRAM_API_HASH")
+TELEGRAM_CHANNEL        = _get("TELEGRAM_CHANNEL")  # Comma-separated channel usernames or IDs (e.g., "@ravenpro" or "1234567890")
+TELEGRAM_SESSION_STRING = _get("TELEGRAM_SESSION_STRING", "")  # Persistent session (will be auto-generated on first run)
+
 # Bybit
 BYBIT_API_KEY    = _get("BYBIT_API_KEY")
 BYBIT_API_SECRET = _get("BYBIT_API_SECRET")
@@ -29,8 +35,12 @@ ACCOUNT_TYPE     = _get("ACCOUNT_TYPE","UNIFIED")  # UNIFIED / CONTRACT etc (dep
 # Bot identification (for multi-bot dashboard support)
 BOT_ID = _get("BOT_ID", "ao")  # Unique identifier for this bot instance
 
-# Signal Parser Version: "v1" = original embed format, "v2" = plain text format
+# Signal Parser Version: "v1" = AO original embed, "v2" = AO plain text, "raven" = Raven Pro
 SIGNAL_PARSER_VERSION = _get("SIGNAL_PARSER_VERSION", "v1").lower()
+
+# Quantum Entry: Use adaptive multi-layer entry for zone-based signals (Raven Pro)
+# Only applies when SIGNAL_PARSER_VERSION = "raven"
+USE_QUANTUM_ENTRY = _get_bool("USE_QUANTUM_ENTRY", "true")
 
 RECV_WINDOW = _get("RECV_WINDOW","5000")
 
@@ -62,6 +72,30 @@ INITIAL_SL_PCT = _get_float("INITIAL_SL_PCT","19.0")  # SL distance from entry i
 # Example: TP1 hit → SL to BE, TP2 hit → SL to TP1, TP3 hit → SL to TP2
 FOLLOW_TP_ENABLED = _get_bool("FOLLOW_TP_ENABLED", "false")
 FOLLOW_TP_BUFFER_PCT = _get_float("FOLLOW_TP_BUFFER_PCT", "0.1")  # Buffer above/below TP level
+
+# Follow-TP Mode: How to decide when to move SL
+# - "threshold": Move SL only if fill >X% OR cumulative >Y% (smart, prevents early runner stops)
+# - "skip_one": Move SL only on odd TPs (TP1, TP3, TP5) - simple and effective
+# - "every_n": Move SL every N TPs (e.g., every 2nd TP)
+# - "custom": Move SL only on specific TPs (e.g., 1,3,5)
+FOLLOW_TP_MODE = _get("FOLLOW_TP_MODE", "custom").lower()
+
+# Threshold mode settings (only used if FOLLOW_TP_MODE=threshold)
+FOLLOW_TP_MIN_FILL_PCT = _get_float("FOLLOW_TP_MIN_FILL_PCT", "15.0")  # Min % fill to move SL
+FOLLOW_TP_CUMULATIVE_MIN = _get_float("FOLLOW_TP_CUMULATIVE_MIN", "70.0")  # OR cumulative >X% closed
+
+# Every-N mode settings (only used if FOLLOW_TP_MODE=every_n)
+FOLLOW_TP_MOVE_INTERVAL = _get_int("FOLLOW_TP_MOVE_INTERVAL", "2")  # Move SL every N TPs
+
+# Custom mode settings (only used if FOLLOW_TP_MODE=custom)
+# Comma-separated list of TP numbers that should move SL
+# Example: "1,3" = only TP1 and TP3 move SL, TP2/4/5/6 skip
+FOLLOW_TP_MOVE_ON_TPS = [int(x) for x in _get("FOLLOW_TP_MOVE_ON_TPS", "1,3").split(",") if x.strip()]
+
+# Quantum Entry Timeouts (seconds)
+QUANTUM_ENTRY_PHASE1_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE1_TIMEOUT", "90")   # Patient phase
+QUANTUM_ENTRY_PHASE2_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE2_TIMEOUT", "90")   # Active phase
+QUANTUM_ENTRY_TOTAL_TIMEOUT = _get_int("QUANTUM_ENTRY_TOTAL_TIMEOUT", "180")    # Max total time
 
 # Max SL distance filter: Skip signals where SL is more than X% from entry
 # Set to 0 to disable this filter

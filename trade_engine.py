@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import db_export
 import telegram_alerts
+from quantum_entry import QuantumEntryEngine
 
 from config import (
     CATEGORY, ACCOUNT_TYPE, QUOTE, LEVERAGE, RISK_PCT,
@@ -12,7 +13,10 @@ from config import (
     ENTRY_EXPIRATION_PRICE_PCT,
     TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT, FALLBACK_TP_PCT,
     MOVE_SL_TO_BE_ON_TP1, BE_BUFFER_PCT,
-    FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, MAX_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
+    FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, FOLLOW_TP_MODE, FOLLOW_TP_MIN_FILL_PCT, FOLLOW_TP_CUMULATIVE_MIN,
+    FOLLOW_TP_MOVE_INTERVAL, FOLLOW_TP_MOVE_ON_TPS,
+    MAX_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
+    QUANTUM_ENTRY_PHASE1_TIMEOUT, QUANTUM_ENTRY_PHASE2_TIMEOUT, QUANTUM_ENTRY_TOTAL_TIMEOUT,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID
 )
@@ -360,6 +364,100 @@ class TradeEngine:
             return oid
         except Exception as e:
             self.log.error(f"❌ Bybit place_order FAILED for {symbol}: {e}")
+            return None
+
+    def place_zone_entry(self, sig: Dict[str, Any], trade_id: str) -> Optional[str]:
+        """
+        Place entry using Quantum Entry System for zone-based signals.
+
+        Returns "QUANTUM_ENTRY" marker if successful, None if failed.
+        """
+        symbol = sig["symbol"]
+        side = "Sell" if sig["side"] == "sell" else "Buy"
+        zone_low = float(sig["entry_zone_low"])
+        zone_high = float(sig["entry_zone_high"])
+
+        # Symbol Locking: Check if another bot is already trading this symbol
+        if db_export.is_enabled():
+            active_trade = db_export.get_active_trade_for_symbol(symbol)
+            if active_trade and active_trade.get("bot_id") != BOT_ID:
+                other_bot = active_trade.get("bot_id")
+                self.log.info(f"⏭️  SKIP {symbol} – already managed by bot '{other_bot}' (symbol locked)")
+                return None
+
+        # Min signal leverage filter
+        if MIN_SIGNAL_LEVERAGE > 0:
+            signal_leverage = sig.get("leverage")
+            if signal_leverage and signal_leverage < MIN_SIGNAL_LEVERAGE:
+                self.log.info(f"⏭️  SKIP {symbol} – signal leverage {signal_leverage}x < {MIN_SIGNAL_LEVERAGE}x minimum")
+                return None
+
+        # Set leverage
+        try:
+            if not DRY_RUN:
+                self.bybit.set_leverage(CATEGORY, symbol, LEVERAGE)
+        except Exception as e:
+            self.log.warning(f"set_leverage failed for {symbol}: {e}")
+
+        # Check if current price is within reasonable range of zone
+        current_price = self.bybit.last_price(CATEGORY, symbol)
+        if side == "Buy":
+            if current_price > zone_high * 1.05:  # 5% above zone
+                self.log.info(f"⏭️  SKIP {symbol} – price too high ({current_price} > {zone_high})")
+                return None
+        else:
+            if current_price < zone_low * 0.95:  # 5% below zone
+                self.log.info(f"⏭️  SKIP {symbol} – price too low ({current_price} < {zone_low})")
+                return None
+
+        # Check max SL distance filter
+        if MAX_SL_DISTANCE_PCT > 0:
+            sl_price = sig.get("sl_price")
+            if sl_price:
+                zone_mid = (zone_low + zone_high) / 2
+                sl_distance_pct = abs(float(sl_price) - zone_mid) / zone_mid * 100
+                if sl_distance_pct > MAX_SL_DISTANCE_PCT:
+                    self.log.info(f"⏭️  SKIP {symbol} – SL too far ({sl_distance_pct:.1f}% > {MAX_SL_DISTANCE_PCT}%)")
+                    return None
+
+        # Get instrument rules
+        rules = self._get_instrument_rules(symbol)
+
+        # Calculate base quantity
+        zone_mid = (zone_low + zone_high) / 2
+        base_qty = self.calc_base_qty(symbol, zone_mid)
+
+        # Get TP1 for "price past TP1" check
+        tp_prices = sig.get("tp_prices") or []
+        tp1_price = float(tp_prices[0]) if tp_prices else None
+
+        self.log.info(f"🎯 Executing Quantum Entry for {symbol} (zone: {zone_low} - {zone_high}, TP1: {tp1_price})")
+
+        # Execute Quantum Entry
+        quantum = QuantumEntryEngine(
+            bybit=self.bybit,
+            symbol=symbol,
+            side=side,
+            zone_low=zone_low,
+            zone_high=zone_high,
+            base_qty=base_qty,
+            logger=self.log,
+            tick_size=rules["tick_size"],
+            qty_step=rules["qty_step"],
+            min_qty=rules["min_qty"],
+            tp1_price=tp1_price,
+            phase1_timeout=QUANTUM_ENTRY_PHASE1_TIMEOUT,
+            phase2_timeout=QUANTUM_ENTRY_PHASE2_TIMEOUT,
+            total_timeout=QUANTUM_ENTRY_TOTAL_TIMEOUT
+        )
+
+        result = quantum.execute()
+
+        if result and result.get("filled"):
+            self.log.info(f"✅ Quantum Entry SUCCESS: {symbol} @ {result['avg_entry']:.6f} ({result['elapsed']:.0f}s)")
+            return "QUANTUM_ENTRY"  # Special marker for zone entry
+        else:
+            self.log.warning(f"❌ Quantum Entry FAILED for {symbol}")
             return None
 
     def cancel_entry(self, symbol: str, order_id: str) -> None:
@@ -775,15 +873,49 @@ class TradeEngine:
                 tp_count = len(tr.get("tp_prices") or FALLBACK_TP_PCT)
                 self.log.info(f"🎯 TP{tp_num} HIT {tr['symbol']} ({tr['tp_fills']}/{tp_count})")
 
-            # Follow-TP: Move SL to previous TP level after each TP hit
+            # Follow-TP: Move SL to previous TP level after each TP hit (FLEXIBLE MODES)
             # OR just move to BE on TP1 (legacy behavior)
             if FOLLOW_TP_ENABLED:
                 # Follow-TP mode: move SL progressively
                 tp_prices = tr.get("tp_prices") or []
+                tp_splits = tr.get("tp_splits") or self._calc_tp_splits(len(tp_prices))
                 side = tr.get("order_side")  # "Buy" or "Sell"
                 entry = float(tr.get("avg_entry") or tr.get("entry_price") or tr.get("trigger"))
 
-                if tp_num == 1:
+                # Determine if this TP should move SL based on FOLLOW_TP_MODE
+                should_move_sl = False
+
+                if FOLLOW_TP_MODE == "threshold":
+                    # THRESHOLD MODE: Only move SL if significant position closed
+                    cumulative_pct = sum(tp_splits[:tp_num])  # TPs are 1-indexed
+                    this_tp_pct = tp_splits[tp_num - 1] if len(tp_splits) >= tp_num else 0
+                    should_move_sl = (
+                        cumulative_pct >= FOLLOW_TP_CUMULATIVE_MIN or  # Cumulative threshold (e.g., 70%)
+                        this_tp_pct >= FOLLOW_TP_MIN_FILL_PCT          # Individual TP threshold (e.g., 15%)
+                    )
+                    self.log.debug(f"Follow-TP (threshold): TP{tp_num} fill={this_tp_pct:.1f}%, cumulative={cumulative_pct:.1f}%, move={should_move_sl}")
+
+                elif FOLLOW_TP_MODE == "skip_one":
+                    # SKIP-ONE MODE: Move SL only on odd TPs (TP1, TP3, TP5, ...)
+                    should_move_sl = (tp_num % 2 == 1)  # Odd TP numbers
+                    self.log.debug(f"Follow-TP (skip_one): TP{tp_num} is {'odd' if should_move_sl else 'even'}, move={should_move_sl}")
+
+                elif FOLLOW_TP_MODE == "every_n":
+                    # EVERY-N MODE: Move SL every N TPs (e.g., every 2nd TP)
+                    should_move_sl = (tp_num % FOLLOW_TP_MOVE_INTERVAL == 1)  # TP1, TP3, TP5 if interval=2
+                    self.log.debug(f"Follow-TP (every_n): TP{tp_num}, interval={FOLLOW_TP_MOVE_INTERVAL}, move={should_move_sl}")
+
+                elif FOLLOW_TP_MODE == "custom":
+                    # CUSTOM MODE: Move SL only on specific TPs (e.g., [1, 3])
+                    should_move_sl = (tp_num in FOLLOW_TP_MOVE_ON_TPS)
+                    self.log.debug(f"Follow-TP (custom): TP{tp_num} in {FOLLOW_TP_MOVE_ON_TPS}, move={should_move_sl}")
+
+                else:
+                    # Default: move on every TP (backward compatibility)
+                    should_move_sl = True
+                    self.log.debug(f"Follow-TP (default): TP{tp_num}, move={should_move_sl}")
+
+                if tp_num == 1 and should_move_sl:
                     # TP1 hit -> SL to Entry (BE)
                     new_sl = entry
                     # Add buffer so BE is slightly in profit
@@ -795,11 +927,11 @@ class TradeEngine:
                     self._move_sl(tr["symbol"], new_sl)
                     tr["sl_moved_to_be"] = True
                     tr["last_sl_level"] = 0  # 0 = Entry/BE
-                    self.log.info(f"✅ SL -> BE {tr['symbol']} @ {new_sl:.6f} (TP1 hit)")
+                    self.log.info(f"✅ SL -> BE {tr['symbol']} @ {new_sl:.6f} (TP{tp_num} hit, mode={FOLLOW_TP_MODE})")
                     # Cancel DCA orders on TP1
                     self._cancel_dca_orders(tr)
 
-                elif tp_num > 1 and len(tp_prices) >= tp_num - 1:
+                elif tp_num > 1 and len(tp_prices) >= tp_num - 1 and should_move_sl:
                     # TP2+ hit -> SL to previous TP level
                     prev_tp = float(tp_prices[tp_num - 2])  # TP2 -> TP1, TP3 -> TP2, etc.
 
@@ -814,7 +946,11 @@ class TradeEngine:
 
                     self._move_sl(tr["symbol"], new_sl)
                     tr["last_sl_level"] = tp_num - 1
-                    self.log.info(f"✅ SL -> TP{tp_num-1} {tr['symbol']} @ {new_sl:.6f} (TP{tp_num} hit)")
+                    self.log.info(f"✅ SL -> TP{tp_num-1} {tr['symbol']} @ {new_sl:.6f} (TP{tp_num} hit, mode={FOLLOW_TP_MODE})")
+
+                elif tp_num >= 1 and not should_move_sl:
+                    # TP hit but skip SL move based on mode
+                    self.log.info(f"⏭️  TP{tp_num} hit but SKIP SL move (mode={FOLLOW_TP_MODE})")
 
             elif MOVE_SL_TO_BE_ON_TP1 and tp_num == 1 and not tr.get("sl_moved_to_be"):
                 # Legacy behavior: only move to BE on TP1
