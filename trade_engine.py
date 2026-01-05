@@ -16,7 +16,7 @@ from config import (
     FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, FOLLOW_TP_MODE, FOLLOW_TP_MIN_FILL_PCT, FOLLOW_TP_CUMULATIVE_MIN,
     FOLLOW_TP_MOVE_INTERVAL, FOLLOW_TP_MOVE_ON_TPS,
     MAX_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
-    QUANTUM_ENTRY_MODE, QUANTUM_ENTRY_PHASE1_TIMEOUT, QUANTUM_ENTRY_PHASE2_TIMEOUT, QUANTUM_ENTRY_TOTAL_TIMEOUT,
+    QUANTUM_ENTRY_MODE, QUANTUM_INSTANT_MARKET_PCT, QUANTUM_ENTRY_PHASE1_TIMEOUT, QUANTUM_ENTRY_PHASE2_TIMEOUT, QUANTUM_ENTRY_TOTAL_TIMEOUT,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID
 )
@@ -480,7 +480,8 @@ class TradeEngine:
             tp1_price=tp1_price,
             phase1_timeout=phase1_timeout,
             phase2_timeout=phase2_timeout,
-            total_timeout=total_timeout
+            total_timeout=total_timeout,
+            instant_market_pct=QUANTUM_INSTANT_MARKET_PCT
         )
 
         result = quantum.execute()

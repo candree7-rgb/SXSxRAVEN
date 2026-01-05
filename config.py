@@ -99,6 +99,12 @@ FOLLOW_TP_MOVE_ON_TPS = [int(x) for x in _get("FOLLOW_TP_MOVE_ON_TPS", "1,3").sp
 # - "aggressive": Always use 30/30/60s timeouts (catch all breakouts, but worse average entry)
 QUANTUM_ENTRY_MODE = _get("QUANTUM_ENTRY_MODE", "auto").lower()
 
+# Quantum Entry Hybrid Mode: Instant partial market order for top-zone signals
+# When price is in top 25% of zone, place instant market order for X% of position
+# Rest is filled with limit orders. Catches breakouts while maintaining good avg entry.
+# Set to 0 to disable (pure limit orders only)
+QUANTUM_INSTANT_MARKET_PCT = _get_float("QUANTUM_INSTANT_MARKET_PCT", "25.0")
+
 # Quantum Entry Timeouts (seconds) - only used if QUANTUM_ENTRY_MODE != "auto"
 QUANTUM_ENTRY_PHASE1_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE1_TIMEOUT", "90")   # Patient phase
 QUANTUM_ENTRY_PHASE2_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE2_TIMEOUT", "90")   # Active phase

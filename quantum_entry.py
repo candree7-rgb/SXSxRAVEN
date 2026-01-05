@@ -118,7 +118,7 @@ class QuantumEntryEngine:
     def __init__(self, bybit, symbol: str, side: str, zone_low: float, zone_high: float,
                  base_qty: float, logger, tick_size: float, qty_step: float, min_qty: float,
                  tp1_price: float = None, phase1_timeout: int = 90, phase2_timeout: int = 90,
-                 total_timeout: int = 180):
+                 total_timeout: int = 180, instant_market_pct: float = 0.0):
         self.bybit = bybit
         self.symbol = symbol
         self.side = side  # "Buy" or "Sell"
@@ -129,6 +129,7 @@ class QuantumEntryEngine:
         self.base_qty = base_qty
         self.log = logger
         self.tp1_price = tp1_price  # For checking if trade already missed
+        self.instant_market_pct = instant_market_pct  # % of position to fill instantly with market order
 
         # Precision
         self.tick_size = tick_size
@@ -141,6 +142,7 @@ class QuantumEntryEngine:
         self.active_orders = {}
         self.start_time = time.time()
         self.price_history = []
+        self.instant_fill_info = None  # Track instant market order fill
 
         # Timeouts (seconds) - now configurable
         self.PHASE_1_TIMEOUT = phase1_timeout   # Patient phase (best prices)
@@ -175,11 +177,38 @@ class QuantumEntryEngine:
                 self.log.info(f"⏭️  SKIP {self.symbol} - price already past TP1 ({initial_price} vs TP1 {self.tp1_price})")
                 return None
 
+            # HYBRID ENTRY: Check if we should place instant market order
+            # If price is in top 25% of zone and instant_market_pct > 0
+            position_in_zone = self._calculate_position_in_zone(initial_price)
+
+            if self.instant_market_pct > 0 and position_in_zone > 0.75:
+                # Top 25% of zone - place instant partial market order
+                instant_qty = self.base_qty * (self.instant_market_pct / 100.0)
+                instant_qty = self._round_qty(instant_qty)
+
+                if instant_qty >= self.min_qty:
+                    self.log.info(f"⚡ HYBRID ENTRY: Price in top 25% of zone ({position_in_zone:.1%}) - placing instant market order for {self.instant_market_pct}% ({instant_qty} qty)")
+                    instant_fill = self._place_instant_market_order(instant_qty)
+
+                    if instant_fill:
+                        self.instant_fill_info = instant_fill
+                        self.filled_qty = instant_fill.get("qty", 0)
+                        self.avg_entry = instant_fill.get("price", initial_price)
+                        self.log.info(f"✅ Instant fill: {self.filled_qty} @ {self.avg_entry:.6f}")
+                    else:
+                        self.log.warning(f"⚠️  Instant market order failed, continuing with limit orders")
+
             # Analyze orderbook for liquidity
             liquidity_map = self._analyze_orderbook()
 
-            # Phase 2: Place initial layered orders
-            self._place_initial_layers(initial_price, liquidity_map)
+            # Phase 2: Place initial layered orders (for remaining quantity)
+            remaining_qty = self.base_qty - self.filled_qty
+            if remaining_qty >= self.min_qty:
+                self._place_initial_layers(initial_price, liquidity_map, target_qty=remaining_qty)
+            else:
+                # Already fully filled with instant order
+                if self.filled_qty >= self.base_qty * 0.95:
+                    return self._finalize_entry()
 
             # Phase 3: Dynamic tracking loop
             last_check = time.time()
@@ -325,18 +354,25 @@ class QuantumEntryEngine:
         # Return price with highest volume
         return max(candidates.items(), key=lambda x: x[1])[0]
 
-    def _place_initial_layers(self, current_price: float, liquidity_map: Dict[float, float]) -> None:
-        """Place 4 layered limit orders across the zone."""
+    def _place_initial_layers(self, current_price: float, liquidity_map: Dict[float, float], target_qty: float = None) -> None:
+        """
+        Place 4 layered limit orders across the zone.
+
+        Args:
+            target_qty: Quantity to place (defaults to base_qty if not specified)
+        """
+        if target_qty is None:
+            target_qty = self.base_qty
 
         optimal_levels = self._calculate_optimal_levels(current_price, liquidity_map)
 
         # Quantity splits: aggressive layers get more size
         splits = [0.30, 0.35, 0.25, 0.10]  # 30% best, 35% good, 25% ok, 10% backup
 
-        self.log.info(f"📊 Placing {len(splits)} entry layers for {self.symbol}:")
+        self.log.info(f"📊 Placing {len(splits)} entry layers for {self.symbol} (target: {target_qty:.4f}):")
 
         for i, (price, split) in enumerate(zip(optimal_levels, splits)):
-            qty = self._round_qty(self.base_qty * split)
+            qty = self._round_qty(target_qty * split)
 
             order_id = self._place_limit_order(price, qty)
 
@@ -616,6 +652,82 @@ class QuantumEntryEngine:
         for order in list(self.active_orders.values()):
             self._cancel_order(order['order_id'])
         self.active_orders.clear()
+
+    # ----- Hybrid Entry Helpers -----
+
+    def _calculate_position_in_zone(self, price: float) -> float:
+        """
+        Calculate position of price within zone.
+
+        Returns:
+            0.0 = bottom of zone, 1.0 = top of zone
+        """
+        if self.zone_range <= 0:
+            return 0.5
+
+        if self.side == "Buy":
+            # For BUY: zone_low (bottom) = 0.0, zone_high (top) = 1.0
+            position = (price - self.zone_low) / self.zone_range
+        else:
+            # For SELL: zone_high (bottom) = 0.0, zone_low (top) = 1.0
+            position = (self.zone_high - price) / self.zone_range
+
+        return max(0.0, min(1.0, position))
+
+    def _place_instant_market_order(self, qty: float) -> Optional[Dict[str, Any]]:
+        """
+        Place instant market order for partial fill.
+
+        Returns:
+            Dict with {"qty": filled_qty, "price": fill_price} on success
+            None on failure
+        """
+        if DRY_RUN:
+            # DRY_RUN: simulate instant fill at current price
+            current_price = self.bybit.last_price(CATEGORY, self.symbol)
+            return {"qty": qty, "price": current_price}
+
+        try:
+            body = {
+                "category": CATEGORY,
+                "symbol": self.symbol,
+                "side": self.side,
+                "orderType": "Market",
+                "qty": f"{qty:.10f}",
+                "reduceOnly": False,
+            }
+
+            resp = self.bybit.place_order(body)
+            result = resp.get("result") or {}
+            order_id = result.get("orderId")
+
+            if not order_id:
+                return None
+
+            # Wait briefly for fill
+            time.sleep(0.5)
+
+            # Fetch order details to get fill price
+            try:
+                order_info = self.bybit.query_order(CATEGORY, self.symbol, order_id)
+                result = order_info.get("result") or {}
+
+                if result.get("orderStatus") == "Filled":
+                    fill_price = float(result.get("avgPrice") or 0)
+                    fill_qty = float(result.get("cumExecQty") or 0)
+
+                    if fill_price > 0 and fill_qty > 0:
+                        return {"qty": fill_qty, "price": fill_price}
+            except Exception as e:
+                self.log.warning(f"Failed to fetch instant order details: {e}")
+
+            # Fallback: assume filled at current price
+            current_price = self.bybit.last_price(CATEGORY, self.symbol)
+            return {"qty": qty, "price": current_price}
+
+        except Exception as e:
+            self.log.error(f"Instant market order failed: {e}")
+            return None
 
     # ----- Precision Helpers -----
 
