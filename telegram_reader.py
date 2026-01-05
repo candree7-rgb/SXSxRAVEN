@@ -85,18 +85,26 @@ class TelegramReader:
 
         for channel in self.channel_usernames:
             try:
-                # Handle both @username and numeric ID formats
+                # Handle @username - needs resolution
                 if channel.startswith('@'):
                     entity = await self.client.get_entity(channel)
-                elif channel.isdigit():
-                    entity = await self.client.get_entity(int(channel))
-                else:
-                    # Try as username without @
-                    entity = await self.client.get_entity(channel)
+                    chat_id = entity.id
+                    self._chat_ids.add(chat_id)
+                    self.log.info(f"✅ Resolved channel {channel} → {chat_id}")
 
-                chat_id = entity.id
-                self._chat_ids.add(chat_id)
-                self.log.info(f"✅ Resolved channel {channel} → {chat_id}")
+                # Handle numeric IDs (including negative ones like -1002025091313)
+                else:
+                    try:
+                        chat_id = int(channel)
+                        # Use ID directly without resolution (works for private channels)
+                        self._chat_ids.add(chat_id)
+                        self.log.info(f"✅ Using channel ID directly: {chat_id}")
+                    except ValueError:
+                        # Not a number, try as username without @
+                        entity = await self.client.get_entity(channel)
+                        chat_id = entity.id
+                        self._chat_ids.add(chat_id)
+                        self.log.info(f"✅ Resolved channel {channel} → {chat_id}")
 
             except Exception as e:
                 self.log.error(f"❌ Failed to resolve channel {channel}: {e}")
