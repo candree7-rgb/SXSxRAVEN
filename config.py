@@ -115,9 +115,10 @@ QUANTUM_ENTRY_TOTAL_TIMEOUT = _get_int("QUANTUM_ENTRY_TOTAL_TIMEOUT", "180")    
 MAX_SL_DISTANCE_PCT = _get_float("MAX_SL_DISTANCE_PCT", "0")
 
 # Min signal leverage filter: Skip signals where leverage in signal text is below this
-# AO Trading uses 25x for normal signals, 5x for risky ones (wider SL)
-# Set to 0 to disable this filter
-MIN_SIGNAL_LEVERAGE = _get_int("MIN_SIGNAL_LEVERAGE", "20")
+# AO Trading uses 25x for normal signals, 5x for risky ones → set to 20 to filter risky signals
+# Raven Pro uses 10x for all signals → set to 0 to accept all
+# Set to 0 to disable this filter (RECOMMENDED for Raven Pro)
+MIN_SIGNAL_LEVERAGE = _get_int("MIN_SIGNAL_LEVERAGE", "0")
 
 # TP_SPLITS: percentage of position to close at each TP level
 # Example: 30,30,30 means 90% total, leaving 10% as runner for trailing stop
