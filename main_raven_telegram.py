@@ -6,6 +6,7 @@ import logging
 import asyncio
 from queue import Queue, Empty
 from typing import Dict, Any
+from flask import Flask, request, jsonify
 
 from config import (
     TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_CHANNEL, TELEGRAM_SESSION_STRING,
@@ -37,6 +38,61 @@ def setup_logger() -> logging.Logger:
     h.setFormatter(fmt)
     log.handlers[:] = [h]
     return log
+
+
+# Flask app for webhook endpoint
+app = Flask(__name__)
+webhook_message_queue = None  # Will be set in main()
+webhook_logger = None  # Will be set in main()
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Webhook endpoint for receiving signals manually."""
+    try:
+        # Get signal text
+        if request.is_json:
+            data = request.get_json()
+            text = data.get('text', '') or data.get('signal', '')
+        else:
+            text = request.data.decode('utf-8')
+
+        if not text:
+            return jsonify({"error": "No signal text provided"}), 400
+
+        webhook_logger.info(f"📨 Webhook received: {text[:100]}...")
+
+        # Parse signal to validate format
+        sig = parse_signal(text, quote=QUOTE)
+        if not sig:
+            webhook_logger.warning("❌ Invalid signal format")
+            return jsonify({"error": "Invalid signal format"}), 400
+
+        # Add to message queue (same as Telegram messages)
+        webhook_message_queue.put({
+            'id': int(time.time() * 1000),  # Unique ID
+            'text': text,
+            'timestamp': time.time()
+        })
+
+        webhook_logger.info(f"✅ Webhook signal queued: {sig['symbol']} {sig['side'].upper()}")
+
+        return jsonify({
+            "status": "success",
+            "symbol": sig["symbol"],
+            "side": sig["side"],
+            "entry_zone": [sig["entry_zone_low"], sig["entry_zone_high"]]
+        }), 200
+
+    except Exception as e:
+        webhook_logger.exception(f"Webhook error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint."""
+    return jsonify({"status": "ok", "service": "raven-pro-bot"}), 200
 
 
 def main():
@@ -78,6 +134,7 @@ def main():
     log.info(f"Config: TP_SPLITS={TP_SPLITS}, TP_SPLITS_AUTO={TP_SPLITS_AUTO}")
     log.info(f"Config: DCA_QTY_MULTS={DCA_QTY_MULTS}, INITIAL_SL_PCT={INITIAL_SL_PCT}%")
     log.info(f"Config: FOLLOW_TP={FOLLOW_TP_ENABLED}, MAX_SL_DISTANCE={MAX_SL_DISTANCE_PCT}%")
+    log.info(f"Config: WEBHOOK_ENABLED=true (Telegram + HTTP webhook)")
 
     # Initialize database if enabled
     if db_export.is_enabled():
@@ -126,7 +183,25 @@ def main():
     telegram_thread = threading.Thread(target=telegram_loop, daemon=True)
     telegram_thread.start()
 
-    # Give Telegram time to connect
+    # Set global variables for webhook
+    global webhook_message_queue, webhook_logger
+    webhook_message_queue = message_queue
+    webhook_logger = log
+
+    # Start Flask webhook server in background thread
+    def flask_loop():
+        try:
+            import os
+            port = int(os.environ.get('PORT', 8080))  # Railway sets PORT automatically
+            log.info(f"🌐 Starting webhook server on port {port}...")
+            app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+        except Exception as e:
+            log.error(f"❌ Flask server error: {e}")
+
+    flask_thread = threading.Thread(target=flask_loop, daemon=True)
+    flask_thread.start()
+
+    # Give services time to start
     time.sleep(5)
 
     # Heartbeat tracking
