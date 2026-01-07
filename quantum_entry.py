@@ -41,10 +41,11 @@ def calculate_optimal_timeouts(
     Strategy:
     - Bottom 25% of zone → Patient (90/90/180) - best entries!
     - Middle 50% of zone → Standard (60/60/120) - balance
-    - Top 25% of zone → Check TP1 distance:
-        - TP1 >10% away → Aggressive (30/30/60) - catch breakout!
-        - TP1 <5% away → Skip (trade already missed)
-        - Otherwise → Standard (60/60/120)
+    - Top 25% of zone → Aggressive (30/30/60) - catch breakout!
+    - Outside zone → Still place orders, wait for retouch!
+
+    NOTE: We no longer skip based on TP1 distance alone!
+    Only skip if price ACTUALLY hit TP1 already (checked in execute()).
     """
     # Fixed modes
     if mode == "patient":
@@ -65,7 +66,8 @@ def calculate_optimal_timeouts(
     else:  # Sell
         position_in_zone = (zone_high - current_price) / zone_range
 
-    position_in_zone = max(0.0, min(1.0, position_in_zone))  # Clamp to 0-1
+    # Don't clamp - allow > 1.0 (outside zone) for retouch logic
+    # position_in_zone can be negative (way below) or > 1.0 (way above)
 
     # Calculate distance to TP1 (as percentage)
     if tp1_price:
@@ -85,21 +87,10 @@ def calculate_optimal_timeouts(
         return (60, 60, 120)
 
     else:
-        # Top 25% of zone - CHECK TP1 DISTANCE
-        if tp1_distance < 0.05:
-            # TP1 less than 5% away - SKIP
-            # Trade already moved too far, not worth entering
-            return None
-
-        elif tp1_distance > 0.10:
-            # TP1 more than 10% away - AGGRESSIVE MODE
-            # Still enough room to TP1, catch the breakout!
-            return (30, 30, 60)
-
-        else:
-            # TP1 5-10% away - STANDARD MODE
-            # Moderate room, standard approach
-            return (60, 60, 120)
+        # Top 25% of zone OR outside zone - AGGRESSIVE MODE
+        # Place orders and wait for retouch or immediate fill
+        # NOTE: We removed the TP1 < 5% skip - only skip if ACTUALLY hit TP1!
+        return (30, 30, 60)
 
 
 class QuantumEntryEngine:
@@ -248,13 +239,18 @@ class QuantumEntryEngine:
             return None
 
     def _price_too_far(self, price: float) -> bool:
-        """Check if current price is too far from zone to enter."""
+        """
+        Check if current price is too far from zone to enter.
+
+        Allows some leeway for retouch scenarios (price came back to zone).
+        Only skip if price is REALLY far away (>10% outside zone).
+        """
         if self.side == "Buy":
-            # For BUY: price too high above zone = bad
-            return price > self.zone_high * 1.03  # 3% above zone top
+            # For BUY: price too high above zone = skip if > 10% above
+            return price > self.zone_high * 1.10  # 10% above zone top
         else:
-            # For SELL: price too low below zone = bad
-            return price < self.zone_low * 0.97  # 3% below zone bottom
+            # For SELL: price too low below zone = skip if > 10% below
+            return price < self.zone_low * 0.90  # 10% below zone bottom
 
     def _price_past_tp1(self, price: float) -> bool:
         """Check if price already reached TP1 (trade already missed)."""
