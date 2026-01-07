@@ -27,6 +27,24 @@ def _opposite_side(side: str) -> str:
 def _pos_side(side: str) -> str:
     return "Long" if side == "Buy" else "Short"
 
+def get_risk_info(bybit, account_type: str = "UNIFIED") -> dict:
+    """
+    Get current risk settings for trade tracking.
+
+    Returns dict with:
+    - risk_pct: Current RISK_PCT from ENV
+    - risk_amount: Calculated $ risk amount (equity * risk_pct / 100)
+    - equity_at_entry: Current account equity at trade entry
+    - leverage: Current LEVERAGE from ENV
+    """
+    equity = bybit.wallet_equity(account_type)
+    return {
+        "risk_pct": RISK_PCT,
+        "risk_amount": round(equity * RISK_PCT / 100, 2),
+        "equity_at_entry": round(equity, 2),
+        "leverage": LEVERAGE
+    }
+
 class TradeEngine:
     def __init__(self, bybit, state: dict, logger):
         self.bybit = bybit

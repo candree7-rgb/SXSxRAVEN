@@ -11,7 +11,7 @@ from flask import Flask, request, jsonify
 from config import (
     TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_CHANNEL, TELEGRAM_SESSION_STRING,
     BYBIT_API_KEY, BYBIT_API_SECRET, BYBIT_TESTNET, BYBIT_DEMO, RECV_WINDOW,
-    CATEGORY, QUOTE, LEVERAGE, RISK_PCT,
+    CATEGORY, ACCOUNT_TYPE, QUOTE, LEVERAGE, RISK_PCT,
     MAX_CONCURRENT_TRADES, MAX_TRADES_PER_DAY, TC_MAX_LAG_SEC,
     POLL_SECONDS, POLL_JITTER_MAX, SIGNAL_UPDATE_INTERVAL_SEC,
     STATE_FILE, DRY_RUN, LOG_LEVEL,
@@ -26,7 +26,7 @@ from telegram_reader import TelegramReader
 from signal_parser_raven import parse_signal, parse_signal_update, signal_hash
 
 from state import load_state, save_state, utc_day_key
-from trade_engine import TradeEngine
+from trade_engine import TradeEngine, get_risk_info
 import db_export
 
 
@@ -441,7 +441,10 @@ def main():
                         log.warning(f"❌ Entry order failed for {sig['symbol']}")
                         continue
 
-                    # Store trade with zone info
+                    # Get current risk settings for tracking
+                    risk_info = get_risk_info(engine.bybit, ACCOUNT_TYPE)
+
+                    # Store trade with zone info + risk tracking
                     st.setdefault("open_trades", {})[trade_id] = {
                         "id": trade_id,
                         "symbol": sig["symbol"],
@@ -460,6 +463,8 @@ def main():
                         "base_qty": engine.calc_base_qty(sig["symbol"], sig["entry_zone_mid"]),
                         "raw": sig.get("raw", ""),
                         "telegram_msg_id": mid,
+                        # Risk & Leverage Tracking
+                        **risk_info
                     }
                     inc_trades_today()
                     log.info(f"🟡 ENTRY PLACED {sig['symbol']} {sig['side'].upper()} zone={sig['entry_zone_low']}-{sig['entry_zone_high']} (id={trade_id})")
