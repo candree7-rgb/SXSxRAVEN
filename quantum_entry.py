@@ -12,7 +12,7 @@ Features:
 import time
 import math
 from typing import Any, Dict, List, Optional, Tuple
-from config import CATEGORY, DRY_RUN
+from config import CATEGORY, DRY_RUN, QUANTUM_MAX_ENTRY_TIME, QUANTUM_TP1_PROXIMITY_EXIT
 
 
 def calculate_optimal_timeouts(
@@ -201,23 +201,57 @@ class QuantumEntryEngine:
                 if self.filled_qty >= self.base_qty * 0.95:
                     return self._finalize_entry()
 
-            # Phase 3: Dynamic tracking loop
+            # Phase 3: Dynamic tracking loop with adaptive exit
             last_check = time.time()
+            max_entry_seconds = QUANTUM_MAX_ENTRY_TIME * 60  # Convert minutes to seconds
 
             while self.filled_qty < self.base_qty * 0.95:  # 95% fill target
                 elapsed = time.time() - self.start_time
 
-                # Timeout check
-                if elapsed > self.TOTAL_TIMEOUT:
-                    self.log.info(f"⏱️  Entry timeout for {self.symbol} - attempting emergency fill")
+                # Timeout check - use adaptive max entry time
+                if elapsed > max_entry_seconds:
+                    self.log.info(f"⏱️  Max entry time reached ({QUANTUM_MAX_ENTRY_TIME} min) for {self.symbol} - attempting emergency fill")
                     return self._emergency_fill()
+
+                # ADAPTIVE EXIT: Check if price is too close to TP1
+                # Stop entry phase early if price moved too far toward TP1
+                if self.tp1_price and QUANTUM_TP1_PROXIMITY_EXIT > 0:
+                    current_price = self.bybit.last_price(CATEGORY, self.symbol)
+
+                    # Calculate how far price has moved from entry toward TP1
+                    if self.side == "Buy":
+                        # LONG: entry < TP1 (price rising toward TP1)
+                        entry_to_tp1 = self.tp1_price - self.zone_mid
+                        current_to_tp1 = self.tp1_price - current_price
+                        if entry_to_tp1 > 0:
+                            proximity = 1.0 - (current_to_tp1 / entry_to_tp1)  # 0.0 = at entry, 1.0 = at TP1
+                        else:
+                            proximity = 0.0
+                    else:
+                        # SHORT: entry > TP1 (price falling toward TP1)
+                        entry_to_tp1 = self.zone_mid - self.tp1_price
+                        current_to_tp1 = current_price - self.tp1_price
+                        if entry_to_tp1 > 0:
+                            proximity = 1.0 - (current_to_tp1 / entry_to_tp1)  # 0.0 = at entry, 1.0 = at TP1
+                        else:
+                            proximity = 0.0
+
+                    # If price is too close to TP1 → stop entry phase
+                    if proximity >= QUANTUM_TP1_PROXIMITY_EXIT:
+                        self.log.info(f"🚀 Price near TP1 ({proximity:.1%} toward target, threshold {QUANTUM_TP1_PROXIMITY_EXIT:.0%}) - stopping entry phase")
+                        # Accept whatever fill we have so far
+                        if self.filled_qty > 0:
+                            return self._finalize_entry()
+                        else:
+                            self.log.warning(f"⚠️  No fill yet but price near TP1 - attempting emergency fill")
+                            return self._emergency_fill()
 
                 # Check for fills every 2 seconds
                 if time.time() - last_check > 2:
                     self._check_fills()
                     last_check = time.time()
 
-                # Dynamic adjustments based on phase
+                # Dynamic adjustments based on phase (using original timeouts for phase transitions)
                 if elapsed < self.PHASE_1_TIMEOUT:
                     phase = "PATIENT"
                 elif elapsed < self.PHASE_1_TIMEOUT + self.PHASE_2_TIMEOUT:

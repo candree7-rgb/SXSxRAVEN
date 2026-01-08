@@ -110,6 +110,16 @@ QUANTUM_ENTRY_PHASE1_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE1_TIMEOUT", "90")   
 QUANTUM_ENTRY_PHASE2_TIMEOUT = _get_int("QUANTUM_ENTRY_PHASE2_TIMEOUT", "90")   # Active phase
 QUANTUM_ENTRY_TOTAL_TIMEOUT = _get_int("QUANTUM_ENTRY_TOTAL_TIMEOUT", "180")    # Max total time
 
+# Quantum Entry Adaptive Settings: Longer entry window with intelligent exit
+# Maximum time to keep entry orders active (minutes)
+# Allows better average entry by waiting for price to move through entire zone
+QUANTUM_MAX_ENTRY_TIME = _get_int("QUANTUM_MAX_ENTRY_TIME", "20")  # 20 minutes default
+
+# Exit entry phase early if price moves too close to TP1 (0.0-1.0)
+# 0.7 = stop entry when price is 70% of the way from entry to TP1
+# Prevents missing the move if price shoots toward TP1
+QUANTUM_TP1_PROXIMITY_EXIT = _get_float("QUANTUM_TP1_PROXIMITY_EXIT", "0.7")
+
 # Max SL distance filter: Skip signals where SL is more than X% from entry
 # Set to 0 to disable this filter
 MAX_SL_DISTANCE_PCT = _get_float("MAX_SL_DISTANCE_PCT", "0")
