@@ -97,7 +97,7 @@ def check_position_alerts(
             dca_status = f"DCAs: {dca_fills}/{dca_count}"
 
             message = (
-                f"<b>Position Alert: -{threshold}%</b>\n\n"
+                f"⚠️ <b>Position Alert: -{threshold}%</b>\n\n"
                 f"<b>{symbol}</b> {direction}\n"
                 f"Position P&L: <b>{pnl_pct:.1f}%</b>\n\n"
                 f"Avg Entry: ${avg_entry:.6f}\n"
@@ -122,9 +122,12 @@ def send_trade_opened(symbol: str, side: str, entry: float, qty: float) -> None:
     if not is_enabled():
         return
 
+    # Emoji: 🟢 LONG, 🔴 SHORT
+    emoji = "🔴" if side == "Sell" else "🟢"
     direction = "SHORT" if side == "Sell" else "LONG"
+
     message = (
-        f"<b>New Trade Opened</b>\n\n"
+        f"{emoji} <b>New Trade Opened</b>\n\n"
         f"<b>{symbol}</b> {direction}\n"
         f"Entry: ${entry:.6f}\n"
         f"Size: {qty}"
@@ -144,12 +147,13 @@ def send_trade_closed(
     if not is_enabled():
         return
 
+    # Emoji: 💰 WIN, ❌ LOSS
     direction = "SHORT" if side == "Sell" else "LONG"
     result = "WIN" if pnl > 0 else "LOSS"
-    emoji = "" if pnl > 0 else ""
+    emoji = "💰" if pnl > 0 else "❌"
 
     message = (
-        f"<b>{emoji} Trade Closed: {result}</b>\n\n"
+        f"{emoji} <b>Trade Closed: {result}</b>\n\n"
         f"<b>{symbol}</b> {direction}\n"
         f"PnL: <b>${pnl:.4f}</b>\n"
         f"Exit: {exit_reason}\n"
