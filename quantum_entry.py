@@ -419,13 +419,19 @@ class QuantumEntryEngine:
                 self.log.info(f"   Layer {i+1}: {qty:.4f} @ {price:.6f} ({zone_pct:.0f}% in zone)")
 
     def _check_fills(self) -> bool:
-        """Check if any orders were filled and update state."""
+        """Check if any orders were filled and update state.
+
+        Multi-fill strategy: Keep all limit orders active to catch spikes AND rebounds.
+        Only cancel when position is 95%+ filled or timeout reached.
+        """
         if DRY_RUN:
             return False
 
         try:
             # Fetch order history for this symbol
             history = self.bybit.order_history(CATEGORY, self.symbol, limit=20)
+
+            filled_any = False
 
             for key, order in list(self.active_orders.items()):
                 order_id = order['order_id']
@@ -438,17 +444,16 @@ class QuantumEntryEngine:
 
                         self._update_avg_entry(fill_price, fill_qty)
 
-                        self.log.info(f"✅ Layer {order['layer']+1} FILLED: {fill_qty:.4f} @ {fill_price:.6f}")
+                        self.log.info(f"✅ Layer {order['layer']+1} FILLED: {fill_qty:.4f} @ {fill_price:.6f} (total: {self.filled_qty:.4f}/{self.base_qty:.4f})")
 
                         # Remove from active orders
                         del self.active_orders[key]
+                        filled_any = True
 
-                        # Cancel other layers (we only want one fill)
-                        self._cancel_all_orders()
+                        # DON'T cancel other layers - let them catch rebounds/spikes!
+                        # Only main loop will stop when 95%+ filled
 
-                        return True
-
-            return False
+            return filled_any
 
         except Exception as e:
             self.log.debug(f"Fill check error: {e}")
