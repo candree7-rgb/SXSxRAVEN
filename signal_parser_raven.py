@@ -56,6 +56,12 @@ RE_CLOSED = re.compile(
     re.I
 )
 
+# Cancel message pattern: "#FET/USDT Cancelled ❌"
+RE_CANCEL = re.compile(
+    r"#?([A-Z0-9]+)/USDT\s+Cancelled",
+    re.I
+)
+
 
 def parse_signal(text: str, quote: str = "USDT") -> Optional[Dict[str, Any]]:
     """
@@ -176,3 +182,23 @@ def signal_hash(sig: Dict[str, Any]) -> str:
     """Generate unique hash for signal deduplication."""
     core = f"{sig.get('symbol')}|{sig.get('side')}|{sig.get('entry_zone_low')}|{sig.get('entry_zone_high')}|{sig.get('tp_prices')}|{sig.get('sl_price')}"
     return hashlib.md5(core.encode("utf-8")).hexdigest()
+
+
+def parse_cancel_message(text: str) -> Optional[str]:
+    """
+    Parse Raven Pro cancel message.
+
+    Returns symbol if this is a cancel message, None otherwise.
+
+    Example:
+    #FET/USDT Cancelled ❌
+    Target achieved before entering the entry zone
+
+    Returns: "FETUSDT"
+    """
+    m = RE_CANCEL.search(text)
+    if not m:
+        return None
+
+    base = m.group(1).upper()
+    return f"{base}USDT"
