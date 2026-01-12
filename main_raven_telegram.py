@@ -23,7 +23,7 @@ from bybit_v5 import BybitV5
 from telegram_reader import TelegramReader
 
 # Import Raven Pro signal parser
-from signal_parser_raven import parse_signal, parse_signal_update, signal_hash
+from signal_parser_raven import parse_signal, parse_signal_update, signal_hash, parse_cancel_message
 
 from state import load_state, save_state, utc_day_key
 from trade_engine import TradeEngine, get_risk_info
@@ -406,6 +406,30 @@ def main():
                         continue
 
                     log.debug(f"Message {mid}: {txt[:200]}...")
+
+                    # Check for Raven Pro CANCEL messages first
+                    canceled_symbol = parse_cancel_message(txt)
+                    if canceled_symbol:
+                        log.info(f"❌ CANCEL message received for {canceled_symbol}")
+                        # Cancel any pending entry orders for this symbol
+                        canceled_count = 0
+                        for tid, tr in list(st.get("open_trades", {}).items()):
+                            if tr.get("symbol") == canceled_symbol and tr.get("status") == "pending":
+                                # Cancel the entry order
+                                oid = tr.get("entry_order_id")
+                                if oid and oid != "DRY_RUN" and oid != "QUANTUM_ENTRY":
+                                    try:
+                                        engine.cancel_entry(canceled_symbol, oid)
+                                        log.info(f"🗑️  Cancelled pending entry for {canceled_symbol} (trade_id: {tid})")
+                                        canceled_count += 1
+                                    except Exception as e:
+                                        log.warning(f"Failed to cancel entry for {canceled_symbol}: {e}")
+                                tr["status"] = "cancelled"
+
+                        if canceled_count == 0:
+                            log.debug(f"   No pending entries found for {canceled_symbol}")
+
+                        continue
 
                     # Parse Raven Pro signal
                     sig = parse_signal(txt, quote=QUOTE)

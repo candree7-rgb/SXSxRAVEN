@@ -465,11 +465,11 @@ class QuantumEntryEngine:
         try:
             current_price = self.bybit.last_price(CATEGORY, self.symbol)
 
-            # CRITICAL: If price already past TP1 → Cancel all and exit
-            if self._price_past_tp1(current_price):
-                self.log.warning(f"⚠️  Price past TP1 for {self.symbol} - cancelling entry (missed trade)")
-                self._cancel_all_orders()
-                raise RuntimeError("Price past TP1 - trade missed")
+            # NOTE: We removed the aggressive TP1 check here - too many false positives!
+            # Problem: Price can spike to TP1 briefly (< 2s), then bounce back.
+            # Old logic: Cancel all entry orders immediately → miss good trade
+            # New logic: Trust Raven Pro CANCEL messages instead, they know better!
+            # Initial TP1 check at entry start (execute()) is still active for obviously-missed trades.
 
             # Track price history for momentum calculation
             self.price_history.append((time.time(), current_price))
